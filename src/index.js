@@ -10,6 +10,8 @@ import previewRoutes from './routes/preview.js';
 import deployRoutes from './routes/deploy.js';
 import downloadRoutes from './routes/download.js';
 import graphicsRoutes from './routes/graphics.js';
+import shortsRoutes from './routes/shorts.js';
+import youtubeAuthRoutes from './routes/youtube-auth.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 
 // Create Express app
@@ -22,6 +24,7 @@ const directories = [
   config.paths.websites,
   config.paths.brochures,
   config.paths.images,
+  config.paths.shorts,
   config.paths.db
 ];
 
@@ -61,6 +64,8 @@ app.use('/api', previewRoutes);
 app.use('/api/deploy', deployRoutes);
 app.use('/api/download', downloadRoutes);
 app.use('/api/graphics', graphicsRoutes);
+app.use('/api/shorts', shortsRoutes);
+app.use('/api/youtube', youtubeAuthRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -92,6 +97,14 @@ server.listen(PORT, () => {
 ║    POST /api/deploy/generate/brochure/:id - Gen brochure   ║
 ║    POST /api/deploy/cloudflare/:id - Deploy to CF Pages    ║
 ║    WS   /api/voice?restaurantId=X - Voice interface        ║
+║                                                            ║
+║  Shorts endpoints:                                         ║
+║    POST /api/shorts/check-cooking - Check cooking frame    ║
+║    POST /api/shorts/process       - Process video to Short ║
+║    GET  /api/shorts/status/:id    - Get job status         ║
+║    GET  /api/shorts/preview/:id   - Preview video          ║
+║    POST /api/shorts/upload-youtube/:id - Upload to YouTube ║
+║    GET  /api/youtube/auth         - YouTube OAuth          ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
 });
