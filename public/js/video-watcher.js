@@ -36,11 +36,11 @@ const VideoWatcher = {
    */
   async startFileSystemWatching() {
     try {
-      // Request directory access
+      // Request directory access - suggest camera roll locations
       this.directoryHandle = await window.showDirectoryPicker({
         id: 'cooking-videos',
         mode: 'read',
-        startIn: 'videos'
+        startIn: 'pictures' // iOS/Android camera roll location
       });
 
       // Build initial file list

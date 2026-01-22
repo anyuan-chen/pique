@@ -25,6 +25,68 @@ class ShortsApp {
 
     // Update YouTube status display
     this.updateYouTubeStatus();
+
+    // Check for shared video (from Meta glasses, etc.)
+    this.checkForSharedVideo();
+  }
+
+  async checkForSharedVideo() {
+    // Check if we came from a share action
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('shared')) return;
+
+    // Clear the URL param
+    window.history.replaceState({}, '', '/shorts.html');
+
+    try {
+      // Get shared file from IndexedDB
+      const db = await this.openShareDB();
+      const file = await this.getSharedFile(db);
+
+      if (file) {
+        // Clear the stored file
+        await this.clearSharedFile(db);
+
+        // Process the shared video
+        this.handleVideoSelect(file);
+      }
+    } catch (err) {
+      console.error('Error loading shared file:', err);
+    }
+  }
+
+  openShareDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('shorts-share', 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        if (!db.objectStoreNames.contains('shared-files')) {
+          db.createObjectStore('shared-files', { keyPath: 'id' });
+        }
+      };
+    });
+  }
+
+  getSharedFile(db) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('shared-files', 'readonly');
+      const store = tx.objectStore('shared-files');
+      const request = store.get('pending');
+      request.onsuccess = () => resolve(request.result?.file);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  clearSharedFile(db) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('shared-files', 'readwrite');
+      const store = tx.objectStore('shared-files');
+      store.delete('pending');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
   handleOAuthCallback() {

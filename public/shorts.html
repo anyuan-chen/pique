@@ -9,6 +9,12 @@
   <title>Cooking Shorts Generator</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="/css/shorts.css">
+  <script>
+    // Register service worker for share target
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
 </head>
 <body>
   <div id="app">
