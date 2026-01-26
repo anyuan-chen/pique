@@ -43,6 +43,7 @@ export const ShortsJobModel = {
       script: row.script,
       voiceoverPath: row.voiceover_path,
       outputPath: row.output_path,
+      outputPathAsmr: row.output_path_asmr,
       thumbnailPath: row.thumbnail_path,
       title: row.title,
       description: row.description,
@@ -119,6 +120,12 @@ export const ShortsJobModel = {
 
     values.push(id);
     db.prepare(`UPDATE shorts_jobs SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getById(id);
+  },
+
+  setAsmrPath(id, asmrPath) {
+    db.prepare('UPDATE shorts_jobs SET output_path_asmr = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(asmrPath, id);
     return this.getById(id);
   },
 

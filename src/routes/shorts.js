@@ -10,6 +10,7 @@ import { ClipSelector } from '../services/clip-selector.js';
 import { VoiceoverGenerator } from '../services/voiceover-generator.js';
 import { VideoProcessor } from '../services/video-processor.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
+import { SubtitleGenerator } from '../services/subtitle-generator.js';
 
 const router = Router();
 
@@ -41,6 +42,7 @@ const upload = multer({
 const clipSelector = new ClipSelector();
 const voiceoverGenerator = new VoiceoverGenerator();
 const youtubeUploader = new YouTubeUploader();
+const subtitleGenerator = new SubtitleGenerator();
 
 /**
  * POST /api/shorts/check-cooking
@@ -124,7 +126,12 @@ router.get('/status/:jobId', (req, res) => {
       script: job.script,
       youtubeVideoId: job.youtubeVideoId,
       youtubeUrl: job.youtubeUrl,
-      createdAt: job.createdAt
+      createdAt: job.createdAt,
+      // Dual output paths
+      outputPathNarrated: job.outputPath,  // Narrated version with voiceover + subtitles
+      outputPathAsmr: job.outputPathAsmr,  // ASMR version with cooking sounds only
+      // Backwards compatibility
+      outputPath: job.outputPath
     });
   } catch (error) {
     console.error('Status check error:', error);
@@ -187,6 +194,60 @@ router.get('/preview/:jobId', async (req, res) => {
 });
 
 /**
+ * GET /api/shorts/preview-asmr/:jobId
+ * Stream the ASMR video for preview
+ */
+router.get('/preview-asmr/:jobId', async (req, res) => {
+  try {
+    const job = ShortsJobModel.getById(req.params.jobId);
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    if (!job.outputPathAsmr) {
+      return res.status(400).json({ error: 'ASMR video not ready yet' });
+    }
+
+    // Check file exists
+    try {
+      await fs.access(job.outputPathAsmr);
+    } catch {
+      return res.status(404).json({ error: 'ASMR video file not found' });
+    }
+
+    const stat = statSync(job.outputPathAsmr);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      const stream = createReadStream(job.outputPathAsmr, { start, end });
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': 'video/mp4'
+      });
+      stream.pipe(res);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4'
+      });
+      createReadStream(job.outputPathAsmr).pipe(res);
+    }
+  } catch (error) {
+    console.error('ASMR preview error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * GET /api/shorts/thumbnail/:jobId
  * Get thumbnail image for a job
  */
@@ -229,7 +290,7 @@ router.put('/metadata/:jobId', async (req, res) => {
 
 /**
  * POST /api/shorts/upload-youtube/:jobId
- * Upload processed video to YouTube
+ * Upload processed video to YouTube using stored tokens
  */
 router.post('/upload-youtube/:jobId', async (req, res) => {
   try {
@@ -243,13 +304,21 @@ router.post('/upload-youtube/:jobId', async (req, res) => {
       return res.status(400).json({ error: 'Video not ready for upload' });
     }
 
-    // Get YouTube tokens from request
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'YouTube authorization required' });
+    // Get stored YouTube tokens from database
+    const { getStoredTokens } = await import('./youtube-auth.js');
+    const storedTokens = getStoredTokens();
+
+    if (!storedTokens) {
+      return res.status(401).json({ error: 'YouTube not connected. Please authenticate first.' });
     }
 
-    const tokens = JSON.parse(Buffer.from(authHeader.slice(7), 'base64').toString());
+    const tokens = {
+      access_token: storedTokens.access_token,
+      refresh_token: storedTokens.refresh_token,
+      expiry_date: storedTokens.expiry_date,
+      scope: storedTokens.scope,
+      token_type: storedTokens.token_type
+    };
 
     // Upload to YouTube
     const { videoId, videoUrl, freshTokens } = await youtubeUploader.uploadVideo(
@@ -270,10 +339,16 @@ router.post('/upload-youtube/:jobId', async (req, res) => {
     // Update job with YouTube info
     ShortsJobModel.setYouTubeInfo(job.id, videoId, videoUrl);
 
+    // Store refreshed tokens if they were updated
+    if (freshTokens) {
+      const { storeTokens } = await import('./youtube-auth.js');
+      storeTokens(freshTokens);
+    }
+
     // Set thumbnail if available
     if (job.thumbnailPath) {
       try {
-        await youtubeUploader.setThumbnail(videoId, job.thumbnailPath, freshTokens);
+        await youtubeUploader.setThumbnail(videoId, job.thumbnailPath, freshTokens || tokens);
       } catch (err) {
         console.warn('Failed to set thumbnail:', err.message);
       }
@@ -282,8 +357,7 @@ router.post('/upload-youtube/:jobId', async (req, res) => {
     res.json({
       success: true,
       videoId,
-      videoUrl,
-      freshTokens // Client should update stored tokens
+      videoUrl
     });
   } catch (error) {
     console.error('YouTube upload error:', error);
@@ -324,6 +398,7 @@ router.delete('/:jobId', async (req, res) => {
       job.clipPath,
       job.voiceoverPath,
       job.outputPath,
+      job.outputPathAsmr,
       job.thumbnailPath
     ].filter(Boolean);
 
@@ -396,7 +471,25 @@ async function processShort(jobId) {
   ShortsJobModel.setVoiceoverPath(jobId, voiceoverPath);
   ShortsJobModel.updateProgress(jobId, 75, 'voiceover_done');
 
-  // 90% - Mix audio tracks
+  // 78% - Generate subtitles from voiceover using whisper.cpp
+  let subtitlePath = null;
+  ShortsJobModel.updateProgress(jobId, 78, 'generating_subtitles');
+  try {
+    subtitlePath = join(outputDir, 'subtitles.ass');
+    await subtitleGenerator.generate(voiceoverPath, subtitlePath, {
+      wordsPerGroup: 3,
+      fontSize: 52,
+      marginV: 180,
+      uppercase: true
+    });
+    console.log(`Subtitles generated: ${subtitlePath}`);
+  } catch (err) {
+    console.warn('Subtitle generation failed, continuing without:', err.message);
+    subtitlePath = null;
+  }
+
+  // === NARRATED PATH ===
+  // 80% - Mix audio tracks (original + voiceover)
   ShortsJobModel.updateProgress(jobId, 80, 'mixing_audio');
 
   const mixedPath = join(outputDir, 'mixed.mp4');
@@ -405,29 +498,57 @@ async function processShort(jobId) {
     voiceoverVolume: 1.0
   });
 
-  ShortsJobModel.updateProgress(jobId, 90, 'audio_mixed');
+  ShortsJobModel.updateProgress(jobId, 84, 'audio_mixed');
 
-  // 95% - Convert to Shorts format (9:16)
-  ShortsJobModel.updateProgress(jobId, 92, 'converting_format');
+  // 86% - Convert to Shorts format (9:16)
+  ShortsJobModel.updateProgress(jobId, 86, 'converting_format');
 
-  const outputPath = join(outputDir, 'final.mp4');
-  await VideoProcessor.convertToShortsFormat(mixedPath, outputPath, {
+  const shortsPath = join(outputDir, 'shorts_narrated.mp4');
+  await VideoProcessor.convertToShortsFormat(mixedPath, shortsPath, {
     method: 'crop'
   });
 
-  // Generate thumbnail
+  // 90% - Burn subtitles if available
+  let narratedPath;
+  if (subtitlePath) {
+    ShortsJobModel.updateProgress(jobId, 90, 'burning_subtitles');
+    narratedPath = join(outputDir, 'final_narrated.mp4');
+    await VideoProcessor.burnSubtitles(shortsPath, subtitlePath, narratedPath);
+  } else {
+    narratedPath = shortsPath;
+  }
+
+  // === ASMR PATH ===
+  // 93% - Generate ASMR version (cooking sounds only, speech reduced)
+  ShortsJobModel.updateProgress(jobId, 93, 'generating_asmr');
+
+  // Reduce speech from original clip audio
+  const asmrAudioPath = join(outputDir, 'asmr_audio.mp4');
+  await VideoProcessor.reduceSpeech(clipPath, asmrAudioPath);
+
+  // 96% - Convert ASMR version to shorts format (9:16)
+  ShortsJobModel.updateProgress(jobId, 96, 'converting_asmr');
+  const asmrPath = join(outputDir, 'final_asmr.mp4');
+  await VideoProcessor.convertToShortsFormat(asmrAudioPath, asmrPath, {
+    method: 'crop'
+  });
+
+  // Save both output paths
+  ShortsJobModel.setAsmrPath(jobId, asmrPath);
+
+  // Generate thumbnail (shared between both versions)
   const thumbnailPath = join(outputDir, 'thumbnail.jpg');
   const thumbnailTimestamp = Math.max(1, Math.min(clipDuration / 3, clipDuration - 1));
-  await VideoProcessor.createThumbnail(outputPath, thumbnailPath, {
+  await VideoProcessor.createThumbnail(narratedPath, thumbnailPath, {
     width: 1080,
     height: 1920,
     timestamp: thumbnailTimestamp
   });
 
-  ShortsJobModel.setOutputPath(jobId, outputPath, thumbnailPath);
+  ShortsJobModel.setOutputPath(jobId, narratedPath, thumbnailPath);
 
-  // Generate metadata
-  const metadata = await voiceoverGenerator.generateMetadata(script, clipAnalysis);
+  // Generate metadata by watching the clip
+  const metadata = await voiceoverGenerator.generateMetadata(clipPath, script);
   ShortsJobModel.setMetadata(jobId, metadata);
 
   // 100% - Complete
@@ -435,8 +556,13 @@ async function processShort(jobId) {
 
   // Clean up intermediate files
   await fs.unlink(mixedPath).catch(() => {});
+  await fs.unlink(asmrAudioPath).catch(() => {});
+  if (subtitlePath && narratedPath !== shortsPath) {
+    await fs.unlink(shortsPath).catch(() => {});
+  }
 
   console.log(`Shorts processing complete for job ${jobId}`);
 }
 
 export default router;
+export { processShort };

@@ -289,6 +289,72 @@ export class VideoProcessor {
   }
 
   /**
+   * Burn subtitles into video using ASS subtitle file
+   * @param {string} inputPath - Path to input video
+   * @param {string} subtitlePath - Path to ASS subtitle file
+   * @param {string} outputPath - Path for output video
+   * @returns {Promise<string>} - Path to video with burned subtitles
+   */
+  static async burnSubtitles(inputPath, subtitlePath, outputPath) {
+    // Escape special characters in path for ffmpeg filter
+    const escapedSubPath = subtitlePath
+      .replace(/\\/g, '\\\\')
+      .replace(/:/g, '\\:')
+      .replace(/'/g, "\\'");
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .outputOptions([
+          '-vf', `ass='${escapedSubPath}'`,
+          '-c:v', 'libx264',
+          '-c:a', 'copy',
+          '-preset', 'fast',
+          '-crf', '23'
+        ])
+        .output(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => reject(new Error(`Subtitle burn failed: ${err.message}`)))
+        .run();
+    });
+  }
+
+  /**
+   * Reduce speech frequencies for ASMR effect
+   * Splits audio into low (rumble) and high (sizzle/crackle) bands,
+   * cutting out the middle frequencies where speech lives (100Hz-3kHz)
+   * @param {string} inputPath - Path to input video
+   * @param {string} outputPath - Path for output video with reduced speech
+   * @returns {Promise<string>} - Path to processed video
+   */
+  static async reduceSpeech(inputPath, outputPath) {
+    // Split audio into two bands and recombine, cutting out speech frequencies:
+    // - Low band: below 100Hz (rumble, sizzling bass)
+    // - High band: above 3500Hz (crackling, crunching, high sizzle)
+    // Speech fundamentals (85-255Hz) and formants (up to 3kHz) are removed
+    const complexFilter = [
+      '[0:a]asplit=2[low][high]',
+      '[low]lowpass=f=100,volume=2[lowout]',
+      '[high]highpass=f=3500,volume=1.5[highout]',
+      '[lowout][highout]amix=inputs=2:duration=first[aout]'
+    ].join(';');
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .complexFilter(complexFilter)
+        .outputOptions([
+          '-map', '0:v',
+          '-map', '[aout]',
+          '-c:v', 'copy',
+          '-c:a', 'aac'
+        ])
+        .output(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => reject(new Error(`Speech reduction failed: ${err.message}`)))
+        .run();
+    });
+  }
+
+  /**
    * Extract frames at 1-second intervals for clip analysis
    * @param {string} videoPath - Path to video file
    * @param {object} options - Extraction options
