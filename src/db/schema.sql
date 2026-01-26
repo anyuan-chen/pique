@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS shorts_jobs (
   voiceover_path TEXT, -- Generated audio path
 
   -- Final output
-  output_path TEXT, -- Final shorts-format video
+  output_path TEXT, -- Final shorts-format video (narrated version)
+  output_path_asmr TEXT, -- ASMR version (cooking sounds only, no voiceover)
   thumbnail_path TEXT,
 
   -- YouTube metadata
@@ -133,3 +134,24 @@ CREATE TABLE IF NOT EXISTS shorts_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_shorts_jobs_status ON shorts_jobs(status);
+
+-- Orders for online ordering
+CREATE TABLE IF NOT EXISTS orders (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL,
+  stripe_session_id TEXT,
+  stripe_payment_intent TEXT,
+  customer_email TEXT,
+  customer_name TEXT,
+  items_json TEXT NOT NULL,
+  subtotal INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_restaurant ON orders(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_orders_stripe_session ON orders(stripe_session_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
