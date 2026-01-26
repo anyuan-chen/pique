@@ -1,7 +1,7 @@
 {
-  "name": "videoresto",
+  "name": "pique",
   "version": "1.0.0",
-  "description": "Restaurant marketing material generator from video",
+  "description": "AI-powered restaurant marketing platform",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
