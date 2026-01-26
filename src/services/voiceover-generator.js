@@ -1,11 +1,12 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleAIFileManager } from '@google/generative-ai/server';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import WebSocket from 'ws';
 import { config } from '../config.js';
-import { VideoProcessor } from './video-processor.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+const fileManager = new GoogleAIFileManager(config.geminiApiKey);
 
 export class VoiceoverGenerator {
   constructor() {
@@ -13,71 +14,71 @@ export class VoiceoverGenerator {
   }
 
   /**
-   * Generate a voiceover script based on clip analysis
+   * Generate a voiceover script by watching the actual video
    * @param {string} clipPath - Path to video clip
-   * @param {object} clipAnalysis - Analysis data from clip selector
+   * @param {object} clipAnalysis - Analysis data (for duration info)
    * @param {object} options - Generation options
    * @returns {Promise<string>} - Generated script
    */
   async generateScript(clipPath, clipAnalysis = {}, options = {}) {
     const {
       style = 'casual', // casual, professional, enthusiastic
-      duration = 30 // Target duration in seconds
+      duration = clipAnalysis.duration || 30
     } = options;
 
-    // Extract a few frames from the clip for context
-    const { paths: framePaths } = await VideoProcessor.extractFramesForAnalysis(clipPath, {
-      interval: Math.max(2, Math.floor(duration / 8)) // Get ~8 frames
+    // Upload video to Gemini
+    console.log('Uploading clip to Gemini for script generation...');
+    const uploadResult = await fileManager.uploadFile(clipPath, {
+      mimeType: this._getMimeType(clipPath),
+      displayName: 'cooking-clip'
     });
 
-    const selectedFrames = framePaths.slice(0, 6);
-
-    const imageParts = await Promise.all(
-      selectedFrames.map(async (path) => {
-        const data = await fs.readFile(path);
-        return {
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: data.toString('base64')
-          }
-        };
-      })
-    );
-
-    const styleGuides = {
-      casual: 'friendly, conversational, like talking to a friend. Use casual language and humor when appropriate.',
-      professional: 'informative and polished, like a cooking show host. Clear and educational.',
-      enthusiastic: 'excited and energetic, like a food vlogger. Use exclamations and vivid descriptions.'
-    };
-
-    const prompt = `You're creating a voiceover script for a YouTube Shorts cooking video (${duration} seconds).
-
-STYLE: ${styleGuides[style] || styleGuides.casual}
-
-CLIP ANALYSIS:
-${JSON.stringify(clipAnalysis.frameAnalysis?.slice(0, 5) || [], null, 2)}
-
-Looking at these frames from the cooking video, write a voiceover script that:
-1. Matches the pacing of a ${duration}-second video
-2. Highlights what's visually interesting
-3. Creates a narrative arc (intro → cooking action → satisfying conclusion)
-4. Feels natural when spoken aloud
-5. Doesn't over-describe what viewers can see
-
-The script should be approximately ${Math.round(duration * 2.5)} words (average speaking pace is ~150 words/minute).
-
-Return ONLY the script text, no formatting, no stage directions, no timestamps. Just the words to be spoken.`;
-
-    const result = await this.model.generateContent([...imageParts, prompt]);
-    const script = result.response.text().trim();
-
-    // Clean up temp frames
-    const framesDir = framePaths[0]?.split('/').slice(0, -1).join('/');
-    if (framesDir) {
-      await fs.rm(framesDir, { recursive: true, force: true }).catch(() => {});
+    // Wait for processing
+    let file = uploadResult.file;
+    while (file.state === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      file = await fileManager.getFile(file.name);
     }
 
-    return script;
+    if (file.state === 'FAILED') {
+      throw new Error('Video processing failed');
+    }
+
+    const styleGuides = {
+      casual: 'friendly and conversational, like talking to a friend',
+      professional: 'polished and informative, like a cooking show host',
+      enthusiastic: 'excited and energetic, like a food vlogger'
+    };
+
+    const prompt = `Watch this cooking video and write a voiceover script for it.
+
+DURATION: ${Math.round(duration)} seconds
+STYLE: ${styleGuides[style] || styleGuides.casual}
+
+Write a script that:
+- Matches the video's pacing and timing
+- Narrates what's happening without over-describing the obvious
+- Has a hook at the start, describes the action, ends with a satisfying conclusion
+- Sounds natural when spoken aloud
+- Is about ${Math.round(duration * 2.5)} words (~150 words/minute speaking pace)
+
+Return ONLY the script. No formatting, no timestamps, no stage directions.`;
+
+    const result = await this.model.generateContent([
+      { fileData: { mimeType: file.mimeType, fileUri: file.uri } },
+      prompt
+    ]);
+
+    // Clean up
+    await fileManager.deleteFile(file.name).catch(() => {});
+
+    return result.response.text().trim();
+  }
+
+  _getMimeType(filePath) {
+    const ext = filePath.split('.').pop().toLowerCase();
+    const types = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
+    return types[ext] || 'video/mp4';
   }
 
   /**
@@ -260,41 +261,55 @@ Return ONLY the script text, no formatting, no stage directions, no timestamps. 
   }
 
   /**
-   * Generate YouTube metadata (title, description, tags)
-   * @param {string} script - Voiceover script
-   * @param {object} clipAnalysis - Clip analysis data
+   * Generate YouTube metadata by watching the video
+   * @param {string} clipPath - Path to the video clip
+   * @param {string} script - Voiceover script (optional, for context)
    * @returns {Promise<{title: string, description: string, tags: string[]}>}
    */
-  async generateMetadata(script, clipAnalysis = {}) {
-    const prompt = `Generate YouTube Shorts metadata for this cooking video.
+  async generateMetadata(clipPath, script = '') {
+    // Upload video
+    const uploadResult = await fileManager.uploadFile(clipPath, {
+      mimeType: this._getMimeType(clipPath),
+      displayName: 'cooking-clip-metadata'
+    });
 
-VOICEOVER SCRIPT:
-${script}
+    let file = uploadResult.file;
+    while (file.state === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      file = await fileManager.getFile(file.name);
+    }
 
-CLIP HIGHLIGHTS:
-${JSON.stringify(clipAnalysis.frameAnalysis?.filter(f => f.isHighlight)?.slice(0, 3) || [], null, 2)}
+    if (file.state === 'FAILED') {
+      throw new Error('Video processing failed');
+    }
 
-Generate metadata optimized for YouTube Shorts discovery:
+    const prompt = `Watch this cooking video and generate YouTube Shorts metadata.
+
+${script ? `VOICEOVER SCRIPT: ${script}` : ''}
 
 Return JSON only:
 {
-  "title": "Catchy title under 70 chars, include cooking-related keywords",
-  "description": "2-3 sentence description with relevant hashtags",
-  "tags": ["array", "of", "relevant", "tags", "max", "10"]
+  "title": "Catchy title under 70 chars with cooking keywords",
+  "description": "2-3 sentences with hashtags",
+  "tags": ["relevant", "tags", "max", "10"]
 }`;
 
-    const result = await this.model.generateContent(prompt);
-    const text = result.response.text();
+    const result = await this.model.generateContent([
+      { fileData: { mimeType: file.mimeType, fileUri: file.uri } },
+      prompt
+    ]);
 
+    await fileManager.deleteFile(file.name).catch(() => {});
+
+    const text = result.response.text();
     try {
       const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       return JSON.parse(cleaned);
     } catch {
-      // Fallback metadata
       return {
         title: 'Quick Cooking Moment',
-        description: 'A delicious cooking moment captured on video. #cooking #shorts #food',
-        tags: ['cooking', 'shorts', 'food', 'recipe', 'kitchen', 'homemade']
+        description: 'A delicious cooking moment. #cooking #shorts #food',
+        tags: ['cooking', 'shorts', 'food', 'recipe', 'kitchen']
       };
     }
   }
