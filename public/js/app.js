@@ -1,8 +1,8 @@
 /**
- * VideoResto - Main Application
+ * Pique - Main Application
  */
 
-class VideoRestoApp {
+class PiqueApp {
   constructor() {
     this.currentRestaurantId = null;
     this.voiceClient = null;
@@ -513,5 +513,5 @@ class VideoRestoApp {
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  window.app = new VideoRestoApp();
+  window.app = new PiqueApp();
 });

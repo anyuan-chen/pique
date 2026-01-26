@@ -101,7 +101,7 @@ const PORT = config.port;
 server.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║                     VideoResto Server                      ║
+║                       Pique Server                         ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Server running at: http://localhost:${PORT}                  ║
 ║  API endpoints:                                            ║

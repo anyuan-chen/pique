@@ -1,5 +1,5 @@
 /**
- * VideoResto - Minimal App
+ * Pique - Minimal App
  */
 
 class SimpleApp {

@@ -1,5 +1,5 @@
 /**
- * Sanity check tests for VideoResto
+ * Sanity check tests for Pique
  * Run with: node --test tests/sanity.test.js
  */
 
