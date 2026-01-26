@@ -22,6 +22,23 @@ export class CloudflareDeployer {
     const projectName = `restaurant-${restaurantId.slice(0, 8)}`;
 
     try {
+      // Check if project exists, create if not
+      const exists = await this.projectExists(projectName);
+      if (!exists) {
+        console.log(`Creating Cloudflare Pages project: ${projectName}`);
+        await execAsync(
+          `npx wrangler pages project create "${projectName}" --production-branch=main`,
+          {
+            env: {
+              ...process.env,
+              CLOUDFLARE_ACCOUNT_ID: this.accountId,
+              CLOUDFLARE_API_TOKEN: this.apiToken
+            },
+            cwd: config.paths.root
+          }
+        );
+      }
+
       // Deploy using wrangler
       const { stdout, stderr } = await execAsync(
         `npx wrangler pages deploy "${websitePath}" --project-name="${projectName}" --commit-dirty=true`,
