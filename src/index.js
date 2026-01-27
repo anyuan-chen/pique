@@ -16,8 +16,10 @@ import googleAdsAuthRoutes from './routes/google-ads-auth.js';
 import ordersRoutes from './routes/orders.js';
 import debugRoutes from './routes/debug.js';
 import chatRoutes from './routes/chat.js';
+import reviewsRoutes from './routes/reviews.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 import { setupMcp } from './mcp/index.js';
+import { startDigestScheduler } from './jobs/digest-scheduler.js';
 
 // Create Express app
 const app = express();
@@ -78,6 +80,7 @@ app.use('/api/google-ads', googleAdsAuthRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/debug', debugRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/reviews', reviewsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -95,6 +98,9 @@ app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
+
+// Start digest scheduler for review aggregation
+startDigestScheduler();
 
 // Start server
 const PORT = config.port;
@@ -130,6 +136,13 @@ server.listen(PORT, () => {
 ║    POST /api/orders/:id/create-checkout - Create checkout  ║
 ║    POST /api/orders/webhook       - Stripe webhook         ║
 ║    GET  /api/orders/:restaurantId/:orderId - Get order     ║
+║                                                            ║
+║  Reviews endpoints:                                        ║
+║    GET  /api/reviews/:id          - List reviews           ║
+║    POST /api/reviews/:id/fetch    - Fetch from Google      ║
+║    POST /api/reviews/:id/link-google - Link Place ID       ║
+║    GET  /api/reviews/:id/digests  - List digests           ║
+║    POST /api/reviews/:id/digests/generate - Generate digest║
 ║                                                            ║
 ║  Debug:                                                    ║
 ║    GET  /debug.html               - Pipeline debug viewer  ║

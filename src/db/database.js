@@ -49,7 +49,9 @@ for (const statement of statements) {
 // Migrations for existing databases
 const migrations = [
   // Add ASMR output path column for dual short types
-  'ALTER TABLE shorts_jobs ADD COLUMN output_path_asmr TEXT'
+  'ALTER TABLE shorts_jobs ADD COLUMN output_path_asmr TEXT',
+  // Add reviews_enabled column for opt-in review aggregation
+  'ALTER TABLE restaurants ADD COLUMN reviews_enabled INTEGER DEFAULT 0'
 ];
 
 for (const migration of migrations) {
