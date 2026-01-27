@@ -6,3 +6,5 @@ export { JobModel } from './job.js';
 export { NoteModel } from './note.js';
 export { ShortsJobModel } from './shorts-job.js';
 export { OrderModel } from './order.js';
+export { ReviewModel, ReviewPlatformModel, DigestPreferencesModel } from './review.js';
+export { ReviewDigestModel } from './review-digest.js';
