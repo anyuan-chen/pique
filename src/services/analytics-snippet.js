@@ -70,7 +70,7 @@ export class AnalyticsSnippet {
       // Use sendBeacon for reliability
       const data = JSON.stringify({ events: events });
       if (navigator.sendBeacon) {
-        navigator.sendBeacon(API_BASE + '/event', data);
+        navigator.sendBeacon(API_BASE + '/event', new Blob([data], { type: 'application/json' }));
       } else {
         fetch(API_BASE + '/event', {
           method: 'POST',

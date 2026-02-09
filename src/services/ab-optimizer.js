@@ -10,6 +10,7 @@ import {
 } from '../db/models/index.js';
 import { statisticalEngine } from './statistical-engine.js';
 import { WebsiteUpdater } from './website-updater.js';
+import { CloudflareDeployer } from './cloudflare-deploy.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
@@ -24,11 +25,29 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
  */
 export class ABOptimizer {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
     this.websiteUpdater = new WebsiteUpdater();
     this.maxExperimentsPerWeek = 3;
     this.minDataDays = 7;
     this.queueSize = 5; // Pre-generate this many hypotheses
+    this._locks = new Map(); // Per-restaurant mutex to prevent concurrent mutations
+  }
+
+  /**
+   * Acquire a per-restaurant lock. Returns a release function.
+   * If another caller already holds the lock, waits for it to finish.
+   */
+  async _acquireLock(restaurantId) {
+    while (this._locks.has(restaurantId)) {
+      await this._locks.get(restaurantId);
+    }
+    let release;
+    const promise = new Promise(resolve => { release = resolve; });
+    this._locks.set(restaurantId, promise);
+    return () => {
+      this._locks.delete(restaurantId);
+      release();
+    };
   }
 
   // ============ MAIN OPTIMIZATION LOOP ============
@@ -37,6 +56,15 @@ export class ABOptimizer {
    * Main optimization loop - called every 4 hours
    */
   async optimize(restaurantId) {
+    const release = await this._acquireLock(restaurantId);
+    try {
+      return await this._optimizeInner(restaurantId);
+    } finally {
+      release();
+    }
+  }
+
+  async _optimizeInner(restaurantId) {
     const state = OptimizerStateModel.getOrCreate(restaurantId);
 
     if (!state.enabled) {
@@ -66,7 +94,7 @@ export class ABOptimizer {
       await this.ensureQueueFilled(restaurantId);
 
       // Try to create new experiment from queue
-      return await this.createExperimentFromQueue(restaurantId);
+      return await this._createExperimentFromQueueInner(restaurantId);
     }
   }
 
@@ -86,13 +114,10 @@ export class ABOptimizer {
       return { error: 'Invalid experiment setup' };
     }
 
-    // Get updated stats from analytics (including revenue)
+    // Get fresh stats from analytics for analysis (don't overwrite variant table —
+    // real-time increments from middleware/record-conversion are authoritative)
     const controlMetrics = AnalyticsEventModel.getVariantMetrics(control.id);
     const treatmentMetrics = AnalyticsEventModel.getVariantMetrics(treatment.id);
-
-    // Update variant stats with revenue
-    VariantModel.updateStats(control.id, controlMetrics.visitors, controlMetrics.conversions, controlMetrics.revenue);
-    VariantModel.updateStats(treatment.id, treatmentMetrics.visitors, treatmentMetrics.conversions, treatmentMetrics.revenue);
 
     // Get experiment status with revenue analysis
     const status = statisticalEngine.getExperimentStatus(
@@ -128,7 +153,7 @@ export class ABOptimizer {
     const combinedWinner = revenueAnalysis.combinedWinner;
 
     if (combinedWinner.winner === 'treatment') {
-      await this.applyWinner(restaurantId, experiment, treatment, revenueAnalysis);
+      await this._applyWinnerInner(restaurantId, experiment, treatment, revenueAnalysis);
 
       const learning = {
         hypothesis: experiment.hypothesis,
@@ -157,7 +182,7 @@ export class ABOptimizer {
     }
 
     if (combinedWinner.winner === 'control' || status.recommendation === 'end_experiment') {
-      await this.revertToControl(restaurantId, experiment);
+      await this._revertToControlInner(restaurantId, experiment);
 
       const learning = {
         hypothesis: experiment.hypothesis,
@@ -239,8 +264,8 @@ export class ABOptimizer {
    * Pause an experiment due to anomaly
    */
   async pauseExperiment(restaurantId, experiment, reason) {
-    // Revert to control immediately
-    await this.revertToControl(restaurantId, experiment);
+    // Revert to control immediately (already under lock from optimize())
+    await this._revertToControlInner(restaurantId, experiment);
 
     // Update experiment status
     ExperimentModel.update(experiment.id, {
@@ -305,6 +330,15 @@ export class ABOptimizer {
    * Create experiment from queue
    */
   async createExperimentFromQueue(restaurantId) {
+    const release = await this._acquireLock(restaurantId);
+    try {
+      return await this._createExperimentFromQueueInner(restaurantId);
+    } finally {
+      release();
+    }
+  }
+
+  async _createExperimentFromQueueInner(restaurantId) {
     if (!OptimizerStateModel.canRunExperiment(restaurantId, this.maxExperimentsPerWeek)) {
       return {
         skipped: true,
@@ -572,7 +606,13 @@ Return JSON only:
 
   // ============ EXPERIMENT ACTIONS ============
 
-  async applyWinner(restaurantId, experiment, treatment, analysis) {
+  async applyWinner(restaurantId, experiment, treatment, analysis, { _locked = false } = {}) {
+    const release = _locked ? null : await this._acquireLock(restaurantId);
+    try { return await this._applyWinnerInner(restaurantId, experiment, treatment, analysis); }
+    finally { if (release) release(); }
+  }
+
+  async _applyWinnerInner(restaurantId, experiment, treatment, analysis) {
     // Promote variant HTML to main (replaces original with winning variant)
     await this.websiteUpdater.promoteVariant(restaurantId, treatment.id);
 
@@ -583,9 +623,24 @@ Return JSON only:
     if (analysis?.revenue?.lift) {
       OptimizerStateModel.addRevenueLift(restaurantId, analysis.revenue.lift);
     }
+
+    // Auto-deploy winning variant to Cloudflare
+    try {
+      const deployer = new CloudflareDeployer();
+      await deployer.deploy(restaurantId);
+      console.log(`Auto-deployed winning variant for restaurant ${restaurantId}`);
+    } catch (err) {
+      console.error(`Auto-deploy after applyWinner failed for ${restaurantId}:`, err.message);
+    }
   }
 
-  async revertToControl(restaurantId, experiment) {
+  async revertToControl(restaurantId, experiment, { _locked = false } = {}) {
+    const release = _locked ? null : await this._acquireLock(restaurantId);
+    try { return await this._revertToControlInner(restaurantId, experiment); }
+    finally { if (release) release(); }
+  }
+
+  async _revertToControlInner(restaurantId, experiment) {
     const variants = VariantModel.getByExperiment(experiment.id);
     const treatment = variants.find(v => !v.isControl);
     const control = variants.find(v => v.isControl);
