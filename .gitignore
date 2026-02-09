@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+package-lock.json
 
 # Environment files
 .env
@@ -12,13 +13,58 @@ data/
 output/
 uploads/
 
+# Test artifacts
+test-results/
+playwright-report/
+
 # OS files
 .DS_Store
 Thumbs.db
+.Rhistory
 
 # IDE
 .vscode/
 .idea/
+
+# Claude
+.claude/
+
+# Video files
+*.mov
+*.mp4
+*.mp4.part
+*.m4a
+
+# Runtime database files
+*.db
+
+# Dev-only scripts
+scripts/
+
+# Assets
+public/assets/
+
+# Demo/animation pages (not part of core app)
+public/ab-demo.html
+public/split-demo.html
+public/iterate-demo.html
+public/card-demo.html
+public/cover.html
+public/extraction-debug.html
+public/transcript-test.html
+public/debug.html
+public/cover-thumb.html
+public/datastore-demo.html
+public/vision.html
+public/shorts-vision.html
+public/shorts-why.html
+public/shorts-demo.html
+public/shorts-pipeline.html
+public/stall-intro.html
+public/reveal.html
+public/end.html
+public/upload-widget-demo.html
+public/voice.html
 
 # Logs
 *.log
