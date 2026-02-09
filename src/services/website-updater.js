@@ -1,7 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import prettier from 'prettier';
 import { config } from '../config.js';
 import { RestaurantModel } from '../db/models/index.js';
 import db from '../db/database.js';
@@ -14,7 +13,7 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
  */
 export class WebsiteUpdater {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   }
 
   /**
@@ -51,8 +50,10 @@ export class WebsiteUpdater {
       updatedHTML = await this.regenerateChunk(updatedHTML, chunk, prompt, restaurant);
     }
 
-    // Write updated HTML
-    await this.writeHTML(restaurantId, updatedHTML);
+    // Write updated HTML only if chunks were modified
+    if (chunks.length > 0) {
+      await this.writeHTML(restaurantId, updatedHTML);
+    }
 
     return {
       success: true,
@@ -97,8 +98,9 @@ Return JSON only (no markdown):
    * Step 2: Generate SQL for data changes
    */
   async generateSQL(prompt, restaurant) {
+    const categoriesData = restaurant.menu.map(c => ({ id: c.id, name: c.name }));
     const menuItemsData = restaurant.menu.flatMap(c =>
-      c.items.map(i => ({ id: i.id, name: i.name, price: i.price, category: c.name }))
+      c.items.map(i => ({ id: i.id, category_id: c.id, name: i.name, price: i.price, category: c.name }))
     );
 
     const sqlPrompt = `Generate SQL for this change:
@@ -118,11 +120,15 @@ Email: ${restaurant.email || 'NULL'}
 Address: ${restaurant.address || 'NULL'}
 Hours: ${JSON.stringify(restaurant.hours || {})}
 
+Categories: ${JSON.stringify(categoriesData)}
 Menu items: ${JSON.stringify(menuItemsData)}
 
-Return ONLY the SQL statement(s), one per line. Use actual IDs from data above.
-Do NOT include any explanation or markdown. Just raw SQL.
-If no SQL is needed, return: -- NO SQL NEEDED`;
+RULES:
+- For new rows, generate IDs with hex(randomblob(16)) — e.g. INSERT INTO menu_items(id, ...) VALUES (hex(randomblob(16)), ...)
+- Use actual category_id values from the Categories list above when inserting menu items.
+- Return ONLY the SQL statement(s), one per line. Use actual IDs from data above.
+- Do NOT include any explanation or markdown. Just raw SQL.
+- If no SQL is needed, return: -- NO SQL NEEDED`;
 
     const result = await this.model.generateContent(sqlPrompt);
     let response = result.response.text().trim();
@@ -310,20 +316,11 @@ Preserve exact indentation and formatting style of the original.`;
   }
 
   /**
-   * Format HTML with prettier for consistent output
+   * Format HTML - skip prettier to avoid spurious diffs and corrupted cart JS
+   * (Prettier's HTML parser mangles '$' in embedded JavaScript)
    */
   async formatHTML(html) {
-    try {
-      return await prettier.format(html, {
-        parser: 'html',
-        printWidth: 120,
-        tabWidth: 2,
-        useTabs: false
-      });
-    } catch (error) {
-      console.warn('HTML formatting failed, using raw HTML:', error.message);
-      return html;
-    }
+    return html;
   }
 
   /**
@@ -483,7 +480,7 @@ Preserve exact indentation and formatting style of the original.`;
   /**
    * Update both index.html and menu.html if the change affects both
    */
-  async updateAll(restaurantId, prompt) {
+  async updateAll(restaurantId, prompt, { skipSQL = false } = {}) {
     const restaurant = RestaurantModel.getFullData(restaurantId);
     if (!restaurant) {
       throw new Error(`Restaurant not found: ${restaurantId}`);
@@ -492,9 +489,9 @@ Preserve exact indentation and formatting style of the original.`;
     // Step 1: Classify
     const classification = await this.classifyRequest(prompt, restaurant);
 
-    // Step 2: SQL if needed
+    // Step 2: SQL if needed (skip if caller already made DB changes)
     let sqlResults = [];
-    if (classification.hasDataChange) {
+    if (!skipSQL && classification.hasDataChange) {
       const sqlStatements = await this.generateSQL(prompt, restaurant);
       sqlResults = await this.executeSQL(sqlStatements);
 
@@ -510,7 +507,9 @@ Preserve exact indentation and formatting style of the original.`;
     for (const chunk of indexChunks) {
       updatedIndex = await this.regenerateChunk(updatedIndex, chunk, prompt, restaurant);
     }
-    await this.writeHTML(restaurantId, updatedIndex);
+    if (indexChunks.length > 0) {
+      await this.writeHTML(restaurantId, updatedIndex);
+    }
 
     // Update menu.html if it exists
     let menuChunksModified = 0;
@@ -521,7 +520,9 @@ Preserve exact indentation and formatting style of the original.`;
       for (const chunk of menuChunks) {
         updatedMenu = await this.regenerateChunk(updatedMenu, chunk, prompt, restaurant);
       }
-      await this.writeMenuHTML(restaurantId, updatedMenu);
+      if (menuChunks.length > 0) {
+        await this.writeMenuHTML(restaurantId, updatedMenu);
+      }
       menuChunksModified = menuChunks.length;
     }
 
