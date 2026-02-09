@@ -45,28 +45,43 @@ function storeTokens(tokens) {
 
 /**
  * GET /api/youtube/auth
- * Start OAuth flow - returns authorization URL
+ * Start OAuth flow - redirects to Google auth page (supports popup flow)
  */
 router.get('/auth', (req, res) => {
   try {
     // Check if YouTube credentials are configured
     if (!config.youtube.clientId || !config.youtube.clientSecret) {
-      return res.status(500).json({
-        error: 'YouTube API not configured. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in .env'
-      });
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: system-ui; text-align: center; padding: 40px;">
+            <h2>YouTube Not Configured</h2>
+            <p>Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in .env</p>
+          </body>
+        </html>
+      `);
     }
 
     const authUrl = youtubeUploader.getAuthUrl();
-    res.json({ authUrl });
+    res.redirect(authUrl);
   } catch (error) {
     console.error('YouTube auth error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="font-family: system-ui; text-align: center; padding: 40px;">
+          <h2>Error</h2>
+          <p>${error.message}</p>
+        </body>
+      </html>
+    `);
   }
 });
 
 /**
  * GET /api/youtube/callback
  * OAuth callback - exchanges code for tokens and stores them server-side
+ * Supports popup flow (auto-closes) and redirect flow (goes to shorts.html)
  */
 router.get('/callback', async (req, res) => {
   console.log('YouTube callback received:', req.query);
@@ -76,12 +91,31 @@ router.get('/callback', async (req, res) => {
 
     if (error) {
       console.error('YouTube OAuth error:', error);
-      return res.redirect(`/shorts.html#auth_error=${encodeURIComponent(error)}`);
+      // Show error in popup-friendly way
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: system-ui; text-align: center; padding: 40px;">
+            <h2>Authentication Failed</h2>
+            <p>${error}</p>
+            <p><a href="/api/youtube/auth">Try again</a></p>
+          </body>
+        </html>
+      `);
     }
 
     if (!code) {
       console.error('No code in callback');
-      return res.redirect('/shorts.html#auth_error=no_code');
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+          <body style="font-family: system-ui; text-align: center; padding: 40px;">
+            <h2>Authentication Failed</h2>
+            <p>No authorization code received</p>
+            <p><a href="/api/youtube/auth">Try again</a></p>
+          </body>
+        </html>
+      `);
     }
 
     console.log('Exchanging code for tokens...');
@@ -92,11 +126,33 @@ router.get('/callback', async (req, res) => {
     storeTokens(tokens);
     console.log('Tokens stored in database');
 
-    // Redirect to success page
-    res.redirect('/shorts.html#youtube_connected=true');
+    // Popup-friendly response that auto-closes
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="font-family: system-ui; text-align: center; padding: 40px;">
+          <h2>YouTube Connected!</h2>
+          <p>You can close this window.</p>
+          <script>
+            if (window.opener) {
+              window.close();
+            }
+          </script>
+        </body>
+      </html>
+    `);
   } catch (error) {
     console.error('YouTube callback error:', error);
-    res.redirect(`/shorts.html#auth_error=${encodeURIComponent(error.message)}`);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="font-family: system-ui; text-align: center; padding: 40px;">
+          <h2>Authentication Failed</h2>
+          <p>${error.message}</p>
+          <p><a href="/api/youtube/auth">Try again</a></p>
+        </body>
+      </html>
+    `);
   }
 });
 
